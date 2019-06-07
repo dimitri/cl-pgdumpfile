@@ -87,25 +87,18 @@
     dump))
 
 (defmethod print-toc ((dump pgdump) &optional (stream t))
-  (let ((header (pgdump-header dump)))
-    (format stream "~&;")
+  (format stream "~&;")
     (multiple-value-bind
           (second minute hour date month year day-of-week dst-p tz)
         (decode-universal-time (pgdump-timestamp dump))
       (declare (ignore day-of-week dst-p tz))
       (format stream
-              "~&; Archive created at ~d-~d-~d ~d:~d:~d"
+              "~&; Archive created at ~d-~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d"
               year month date hour minute second))
     (format stream "~&;     dbname: ~a" (pgdump-dbname dump))
     (format stream "~&;     TOC entries: ~a" (length (pgdump-entry-list dump)))
     (format stream "~&;     Compression: ~a" (pgdump-compressed-p dump))
-    (format stream "~&;     Dump version: ~a.~a-~a"
-            (header-version-major header)
-            (header-version-minor header)
-            (header-version-revision header))
-    (format stream "~&;     Format: ~a" (header-format header))
-    (format stream "~&;     Integer: ~a bytes" (header-integer-size header))
-    (format stream "~&;     Offset: ~a bytes" (header-offset-size header))
+    (print-toc (pgdump-header dump) stream)
     (format stream
             "~&;     Dumped from database version: ~a"
             (pgdump-server-version dump))
@@ -118,18 +111,30 @@
     (format stream "~&;")
 
     (loop :for entry :in (pgdump-entry-list dump)
-       :do (format stream
-                   "~&~a; ~a ~a ~a ~:[-~*~;~a~] ~a ~a"
-                   (entry-dump-id entry)
-                   (entry-table-oid entry)
-                   (entry-oid entry)
-                   (entry-desc entry)
-                   (entry-namespace entry)
-                   (entry-namespace entry)
-                   (entry-tag entry)
-                   (entry-owner entry)))
+       :do (print-toc entry stream))
 
-    (terpri stream)))
+    (terpri stream))
+
+(defmethod print-toc ((header header) &optional (stream t))
+  (format stream "~&;     Dump version: ~a.~a-~a"
+          (header-version-major header)
+          (header-version-minor header)
+          (header-version-revision header))
+  (format stream "~&;     Format: ~a" (header-format header))
+  (format stream "~&;     Integer: ~a bytes" (header-integer-size header))
+  (format stream "~&;     Offset: ~a bytes" (header-offset-size header)))
+
+(defmethod print-toc ((entry entry) &optional (stream t))
+  (format stream
+          "~&~a; ~a ~a ~a ~:[-~*~;~a~] ~a ~a"
+          (entry-dump-id entry)
+          (entry-table-oid entry)
+          (entry-oid entry)
+          (entry-desc entry)
+          (entry-namespace entry)
+          (entry-namespace entry)
+          (entry-tag entry)
+          (entry-owner entry)))
 
 
 ;;;
