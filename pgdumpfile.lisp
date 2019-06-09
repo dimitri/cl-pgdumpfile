@@ -136,6 +136,56 @@
           (entry-tag entry)
           (entry-owner entry)))
 
+(defmethod read-data ((dump pgdump) (entry entry))
+  "Read the COPY data from the pgdump file."
+  (assert (= (entry-data-state entry) +k-offset-pos-set+))
+
+  (with-open-file (stream (pgdump-path dump)
+                          :direction :input
+                          :element-type '(unsigned-byte 8))
+    (let ((integer-size (header-integer-size (pgdump-header dump))))
+      ;; seek to the entry position and read its block header
+      (file-position stream (entry-offset entry))
+      (let ((block-type (read-byte stream))
+            (dump-id    (read-signed-integer stream integer-size)))
+        (assert (= dump-id (entry-dump-id entry)))
+        (assert (= block-type +block-data+))
+        (if (pgdump-compressed-p dump)
+            (read-compressed-block stream integer-size)
+            (read-block stream integer-size))))))
+
+(defun read-block (stream integer-size)
+  (let* ((block-size (read-signed-integer stream integer-size))
+         (block-data (make-array block-size :element-type '(unsigned-byte 8))))
+    (parse-copy-lines (read-sequence block-data stream))))
+
+(defun read-compressed-block (stream integer-size)
+  (let* ((dstate (chipz:make-dstate 'chipz:zlib))
+         (array-list
+          (loop :for size := (read-signed-integer stream integer-size)
+             :for bytes := (make-array size :element-type '(unsigned-byte 8))
+             :do (read-sequence bytes stream)
+             :collect (chipz:decompress nil dstate bytes)
+             :while (= size +zlib-in-size+)))
+         (total-size (reduce #'+ array-list :key #'length)))
+    (if (= 1 (length array-list))
+        (parse-copy-lines (first array-list))
+        (let ((vector (make-array total-size :element-type '(unsigned-byte 8))))
+          (loop :for start := 0 :then (+ start (length sub-vector))
+             :for sub-vector :in array-list
+             :do (replace vector sub-vector :start1 start))
+          (parse-copy-lines vector)))))
+
+(defun parse-copy-lines (data)
+  (let ((string (babel:octets-to-string data :encoding *external-format*)))
+    (with-input-from-string (s string)
+      (loop :for line := (read-line s nil nil)
+         :while (and line
+                     (string/= "\\." line :end2 2))
+         :collect (mapcar (lambda (col)
+                            (if (string= col "\\N") nil col))
+                          (split-sequence:split-sequence #\Tab line))))))
+
 
 ;;;
 ;;; Postgres dump file elements reader
