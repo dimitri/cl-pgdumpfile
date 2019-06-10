@@ -6,6 +6,7 @@
   :author "Dimitri Fontaine <dim@tapoueh.org>"
   :license "WTFPL"
   :depends-on (#:babel
-               #:chipz)
+               #:chipz
+               #:split-sequence)
   :components ((:file "package")
 	       (:file "pgdumpfile")))
