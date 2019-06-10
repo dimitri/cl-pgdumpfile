@@ -35,9 +35,9 @@
 ;;; a table it also has a COPY statement that contains the table contents.
 ;;;
 (defstruct entry
-  dump-id dumper-p table-oid oid tag desc section defn
-  drop-statement copy-statement namespace tablespace owner
-  oids-p dependencies data-state offset)
+  dump-id dumper-p table-oid oid tag desc section
+  create-statement drop-statement copy-statement
+  namespace tablespace owner oids-p dependencies data-state offset)
 
 (defstruct header
   version-major version-minor version-revision integer-size offset-size format)
@@ -106,7 +106,7 @@
          (tag          (read-string stream integer-size))
          (desc         (read-string stream integer-size))
          (section      (nth (read-signed-integer stream integer-size) +sections+))
-         (defn         (read-string stream integer-size))
+         (create-stmt  (read-string stream integer-size))
          (drop-stmt    (read-string stream integer-size))
          (copy-stmt    (read-string stream integer-size))
          (namespace    (read-string stream integer-size))
@@ -124,7 +124,7 @@
                    :tag tag
                    :desc desc
                    :section section
-                   :defn defn
+                   :create-statement create-stmt
                    :drop-statement drop-stmt
                    :copy-statement copy-stmt
                    :namespace namespace
