@@ -45,6 +45,10 @@
 (defstruct pgdump path header compressed-p timestamp dbname
            server-version pgdump-version entry-list)
 
+
+;;;
+;;; Postgres dump file elements reader
+;;;
 (defun open-pgdump-file (pathname)
   (let* ((dump (make-instance 'pgdump :path pathname)))
     (with-open-file (stream pathname
@@ -86,110 +90,6 @@
               (pgdump-entry-list dump)     entry-list)))
     dump))
 
-(defmethod print-toc ((dump pgdump) &optional (stream t))
-  (format stream "~&;")
-    (multiple-value-bind
-          (second minute hour date month year day-of-week dst-p tz)
-        (decode-universal-time (pgdump-timestamp dump))
-      (declare (ignore day-of-week dst-p tz))
-      (format stream
-              "~&; Archive created at ~d-~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d"
-              year month date hour minute second))
-    (format stream "~&;     dbname: ~a" (pgdump-dbname dump))
-    (format stream "~&;     TOC entries: ~a" (length (pgdump-entry-list dump)))
-    (format stream "~&;     Compression: ~a" (pgdump-compressed-p dump))
-    (print-toc (pgdump-header dump) stream)
-    (format stream
-            "~&;     Dumped from database version: ~a"
-            (pgdump-server-version dump))
-    (format stream
-            "~&;     Dumped by pg_dump version: ~a"
-            (pgdump-pgdump-version dump))
-    (format stream "~&;")
-    (format stream "~&;")
-    (format stream "~&; Selected TOC Entries:")
-    (format stream "~&;")
-
-    (loop :for entry :in (pgdump-entry-list dump)
-       :do (print-toc entry stream))
-
-    (terpri stream))
-
-(defmethod print-toc ((header header) &optional (stream t))
-  (format stream "~&;     Dump version: ~a.~a-~a"
-          (header-version-major header)
-          (header-version-minor header)
-          (header-version-revision header))
-  (format stream "~&;     Format: ~a" (header-format header))
-  (format stream "~&;     Integer: ~a bytes" (header-integer-size header))
-  (format stream "~&;     Offset: ~a bytes" (header-offset-size header)))
-
-(defmethod print-toc ((entry entry) &optional (stream t))
-  (format stream
-          "~&~a; ~a ~a ~a ~:[-~*~;~a~] ~a ~a"
-          (entry-dump-id entry)
-          (entry-table-oid entry)
-          (entry-oid entry)
-          (entry-desc entry)
-          (entry-namespace entry)
-          (entry-namespace entry)
-          (entry-tag entry)
-          (entry-owner entry)))
-
-(defmethod read-data ((dump pgdump) (entry entry))
-  "Read the COPY data from the pgdump file."
-  (assert (= (entry-data-state entry) +k-offset-pos-set+))
-
-  (with-open-file (stream (pgdump-path dump)
-                          :direction :input
-                          :element-type '(unsigned-byte 8))
-    (let ((integer-size (header-integer-size (pgdump-header dump))))
-      ;; seek to the entry position and read its block header
-      (file-position stream (entry-offset entry))
-      (let ((block-type (read-byte stream))
-            (dump-id    (read-signed-integer stream integer-size)))
-        (assert (= dump-id (entry-dump-id entry)))
-        (assert (= block-type +block-data+))
-        (if (pgdump-compressed-p dump)
-            (read-compressed-block stream integer-size)
-            (read-block stream integer-size))))))
-
-(defun read-block (stream integer-size)
-  (let* ((block-size (read-signed-integer stream integer-size))
-         (block-data (make-array block-size :element-type '(unsigned-byte 8))))
-    (parse-copy-lines (read-sequence block-data stream))))
-
-(defun read-compressed-block (stream integer-size)
-  (let* ((dstate (chipz:make-dstate 'chipz:zlib))
-         (array-list
-          (loop :for size := (read-signed-integer stream integer-size)
-             :for bytes := (make-array size :element-type '(unsigned-byte 8))
-             :do (read-sequence bytes stream)
-             :collect (chipz:decompress nil dstate bytes)
-             :while (= size +zlib-in-size+)))
-         (total-size (reduce #'+ array-list :key #'length)))
-    (if (= 1 (length array-list))
-        (parse-copy-lines (first array-list))
-        (let ((vector (make-array total-size :element-type '(unsigned-byte 8))))
-          (loop :for start := 0 :then (+ start (length sub-vector))
-             :for sub-vector :in array-list
-             :do (replace vector sub-vector :start1 start))
-          (parse-copy-lines vector)))))
-
-(defun parse-copy-lines (data)
-  (let ((string (babel:octets-to-string data :encoding *external-format*)))
-    (with-input-from-string (s string)
-      (loop :for line := (read-line s nil nil)
-         :while (and line
-                     (string/= "\\." line :end2 2))
-         :collect (mapcar (lambda (col)
-                            (if (string= col "\\N") nil col))
-                          (split-sequence:split-sequence #\Tab line))))))
-
-
-;;;
-;;; Postgres dump file elements reader
-;;;
 (defun read-header-magic (stream)
   "First 5 bytes of a Postgres dump file are PGDMP."
   (let* ((magic (make-array 5 :element-type '(unsigned-byte 8))))
@@ -240,6 +140,114 @@
   (loop :for id := (read-string stream integer-size)
      :while (and id (not (string= "" id)))
      :collect (parse-integer id)))
+
+
+;;;
+;;; Print the Table Of Contents of a dump file, same format as pg_restore -l
+;;;
+(defmethod print-toc ((dump pgdump) &optional (stream t))
+  (format stream "~&;")
+    (multiple-value-bind
+          (second minute hour date month year day-of-week dst-p tz)
+        (decode-universal-time (pgdump-timestamp dump))
+      (declare (ignore day-of-week dst-p tz))
+      (format stream
+              "~&; Archive created at ~d-~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d"
+              year month date hour minute second))
+    (format stream "~&;     dbname: ~a" (pgdump-dbname dump))
+    (format stream "~&;     TOC entries: ~a" (length (pgdump-entry-list dump)))
+    (format stream "~&;     Compression: ~a" (pgdump-compressed-p dump))
+    (print-toc (pgdump-header dump) stream)
+    (format stream
+            "~&;     Dumped from database version: ~a"
+            (pgdump-server-version dump))
+    (format stream
+            "~&;     Dumped by pg_dump version: ~a"
+            (pgdump-pgdump-version dump))
+    (format stream "~&;")
+    (format stream "~&;")
+    (format stream "~&; Selected TOC Entries:")
+    (format stream "~&;")
+
+    (loop :for entry :in (pgdump-entry-list dump)
+       :do (print-toc entry stream))
+
+    (terpri stream))
+
+(defmethod print-toc ((header header) &optional (stream t))
+  (format stream "~&;     Dump version: ~a.~a-~a"
+          (header-version-major header)
+          (header-version-minor header)
+          (header-version-revision header))
+  (format stream "~&;     Format: ~a" (header-format header))
+  (format stream "~&;     Integer: ~a bytes" (header-integer-size header))
+  (format stream "~&;     Offset: ~a bytes" (header-offset-size header)))
+
+(defmethod print-toc ((entry entry) &optional (stream t))
+  (format stream
+          "~&~a; ~a ~a ~a ~:[-~*~;~a~] ~a ~a"
+          (entry-dump-id entry)
+          (entry-table-oid entry)
+          (entry-oid entry)
+          (entry-desc entry)
+          (entry-namespace entry)
+          (entry-namespace entry)
+          (entry-tag entry)
+          (entry-owner entry)))
+
+
+;;;
+;;; Read data blocks: lists of COPY formatted rows.
+;;;
+(defmethod read-data ((dump pgdump) (entry entry))
+  "Read the COPY data from the pgdump file."
+  (assert (= (entry-data-state entry) +k-offset-pos-set+))
+
+  (with-open-file (stream (pgdump-path dump)
+                          :direction :input
+                          :element-type '(unsigned-byte 8))
+    (let ((integer-size (header-integer-size (pgdump-header dump))))
+      ;; seek to the entry position and read its block header
+      (file-position stream (entry-offset entry))
+      (let ((block-type (read-byte stream))
+            (dump-id    (read-signed-integer stream integer-size)))
+        (assert (= dump-id (entry-dump-id entry)))
+        (assert (= block-type +block-data+))
+        (if (pgdump-compressed-p dump)
+            (read-compressed-block stream integer-size)
+            (read-block stream integer-size))))))
+
+(defun read-block (stream integer-size)
+  (let* ((block-size (read-signed-integer stream integer-size))
+         (block-data (make-array block-size :element-type '(unsigned-byte 8))))
+    (parse-copy-lines (read-sequence block-data stream))))
+
+(defun read-compressed-block (stream integer-size)
+  (let* ((dstate (chipz:make-dstate 'chipz:zlib))
+         (array-list
+          (loop :for size := (read-signed-integer stream integer-size)
+             :for bytes := (make-array size :element-type '(unsigned-byte 8))
+             :do (read-sequence bytes stream)
+             :collect (chipz:decompress nil dstate bytes)
+             :while (= size +zlib-in-size+)))
+         (total-size (reduce #'+ array-list :key #'length)))
+    (if (= 1 (length array-list))
+        (parse-copy-lines (first array-list))
+        (let ((vector (make-array total-size :element-type '(unsigned-byte 8))))
+          (loop :for start := 0 :then (+ start (length sub-vector))
+             :for sub-vector :in array-list
+             :do (replace vector sub-vector :start1 start))
+          (parse-copy-lines vector)))))
+
+(defun parse-copy-lines (data)
+  (let ((string (babel:octets-to-string data :encoding *external-format*)))
+    (with-input-from-string (s string)
+      (loop :for line := (read-line s nil nil)
+         :while (and line
+                     (string/= "\\." line :end2 2))
+         :collect (mapcar (lambda (col)
+                            (if (string= col "\\N") nil col))
+                          (split-sequence:split-sequence #\Tab line))))))
 
 
 ;;;
